@@ -73,7 +73,24 @@ uv run python run.py
 python run.py
 ```
 
-服务默认启动在 `http://localhost:8000`。
+服务默认启动在端口 8000（配置 `server.port`）。**绑定地址**由 `server.host`
+控制：`127.0.0.1` = **仅本机**（本项目的部署方式；配合
+`scripts/start-gemini-api.sh` 使用），`0.0.0.0` = 所有网卡（局域网可访问，
+仅在确实需要对外暴露时使用）。
+
+**本机启动辅助脚本**（本机部署使用，PID 文件保证 start/stop 幂等）：
+
+```bash
+scripts/start-gemini-api.sh start   # 等待 /health 返回 200
+scripts/start-gemini-api.sh status  # 健康检查 + pid
+scripts/start-gemini-api.sh stop    # 优雅停止
+```
+
+日志在 `${TMPDIR}/gemini-api.log`，PID 在 `${TMPDIR}/gemini-api.pid`。
+环境变量：`GEMINI_API_PORT`（默认 8000）、`GEMINI_START_TIMEOUT_LOOPS`。
+
+**Web API 访问位置（本部署）**：仅本机 `http://127.0.0.1:8000` — `/health`、
+交互式文档 `/docs`，以及下方所有 `/v1/*` 接口。已验证局域网地址无法访问。
 
 ## API 接口
 

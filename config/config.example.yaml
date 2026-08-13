@@ -1,7 +1,7 @@
 # Gemini FastAPI Configuration File
 
 server:
-  host: "0.0.0.0" # Server bind address
+  host: "0.0.0.0" # Server bind address: 0.0.0.0 = all interfaces (LAN-accessible), 127.0.0.1 = local-only
   port: 8000 # Server port
   api_key: null # API key for authentication (null for no auth)
   https:

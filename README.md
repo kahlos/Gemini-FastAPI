@@ -73,7 +73,27 @@ uv run python run.py
 python run.py
 ```
 
-The server will start on `http://localhost:8000` by default.
+The server starts on port 8000 (config `server.port`). Its **bind address** is
+`server.host`: `127.0.0.1` = **local-only** (reachable only from this machine —
+this project's deployment posture, matching the `scripts/start-gemini-api.sh`
+helper), `0.0.0.0` = all interfaces (LAN-accessible — only if you intend to
+expose it).
+
+**Local launch helper** (used on this machine; keeps a PID file so start/stop
+are idempotent):
+
+```bash
+scripts/start-gemini-api.sh start   # waits until /health returns 200
+scripts/start-gemini-api.sh status  # health body + pid
+scripts/start-gemini-api.sh stop    # graceful shutdown
+```
+
+Logs go to `${TMPDIR}/gemini-api.log`, PID to `${TMPDIR}/gemini-api.pid`.
+Env knobs: `GEMINI_API_PORT` (default 8000), `GEMINI_START_TIMEOUT_LOOPS`.
+
+**Where the Web API is accessible (this deployment)**: local-only at
+`http://127.0.0.1:8000` — `/health`, interactive docs at `/docs`, and the
+`/v1/*` endpoints below. Verified: LAN address connection refused.
 
 ## API Endpoints
 
