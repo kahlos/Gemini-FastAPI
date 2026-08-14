@@ -67,10 +67,10 @@ from app.server.chat import (
     _build_structured_requirement,
     _find_reusable_session,
     _get_available_models,
-    _get_model_by_name,
     _image_to_base64,
     _persist_conversation,
     _prepare_messages_for_model,
+    _resolve_model_name,
     _send_with_split,
 )
 from app.server.middleware import (
@@ -380,7 +380,7 @@ async def gemini_get_model(model: str, api_key: str = Depends(verify_gemini_api_
     """Get one model's info (Gemini API format)."""
     model_name = _strip_model_prefix(model)
     try:
-        _get_model_by_name(model_name)
+        _resolve_model_name(GeminiClientPool(), model_name)
     except ValueError as exc:
         err = _to_gemini_error(404, str(exc), "NOT_FOUND")
         return JSONResponse(status_code=404, content=err.model_dump(mode="json"))
@@ -411,7 +411,7 @@ async def gemini_generate_content(
     model_name = _strip_model_prefix(model)
 
     try:
-        model_obj = _get_model_by_name(model_name)
+        model_obj = _resolve_model_name(GeminiClientPool(), model_name)
     except ValueError as exc:
         err = _to_gemini_error(400, str(exc), "INVALID_ARGUMENT")
         return JSONResponse(status_code=400, content=err.model_dump(mode="json"))
@@ -550,7 +550,7 @@ async def gemini_stream_generate_content(
     model_name = _strip_model_prefix(model)
 
     try:
-        model_obj = _get_model_by_name(model_name)
+        model_obj = _resolve_model_name(GeminiClientPool(), model_name)
     except ValueError as exc:
         err = _to_gemini_error(400, str(exc), "INVALID_ARGUMENT")
         return JSONResponse(status_code=400, content=err.model_dump(mode="json"))

@@ -1,12 +1,10 @@
 import asyncio
 import random
 from collections import deque
-from typing import Any
 
 from loguru import logger
 
 from app.utils import g_config
-from app.utils.config import load_cached_1psidts
 from app.utils.singleton import Singleton
 
 from .client import GeminiClientWrapper
@@ -20,53 +18,23 @@ class GeminiClientPool(metaclass=Singleton):
         self._id_map: dict[str, GeminiClientWrapper] = {}
         self._round_robin: deque[GeminiClientWrapper] = deque()
         self._restart_locks: dict[str, asyncio.Lock] = {}
-        self._client_specs: dict[str, dict[str, Any]] = {}
 
         if len(g_config.gemini.clients) == 0:
             raise ValueError("No Gemini clients configured")
 
         for c in g_config.gemini.clients:
-            kwargs = c.model_dump(exclude={"id"})
             client = GeminiClientWrapper(
                 client_id=c.id,
-                **kwargs,
+                **c.model_dump(exclude={"id"}),
             )
             self._clients.append(client)
             self._id_map[c.id] = client
             self._round_robin.append(client)
             self._restart_locks[c.id] = asyncio.Lock()
-            self._client_specs[c.id] = kwargs
 
     async def _init_one(self, client: GeminiClientWrapper) -> bool:
-        """Initialize a single client: primary credentials, cached-1PSIDTS retry."""
-        live_client = await self._init_with_fallback(client)
-        if live_client is None:
-            return False
-        return True
-
-    async def _init_with_fallback(self, client: GeminiClientWrapper) -> GeminiClientWrapper | None:
-        """Initialize a client, retrying once with a cached rotated 1PSIDTS on failure.
-
-        Returns the live client on success (possibly a replacement object), or None."""
-        if await self._init_attempt(client):
-            return client
-
-        spec = self._client_specs.get(client.id) or {}
-        psid = spec.get("secure_1psid")
-        cached_1psidts = load_cached_1psidts(psid) if psid else None
-        if not cached_1psidts or cached_1psidts == spec.get("secure_1psidts"):
-            logger.error(f"Failed to initialize client {client.id}")
-            return None
-        logger.warning(
-            f"Client {client.id} init failed; retrying once with cached rotated 1PSIDTS."
-        )
-        retry_kwargs = {**spec, "secure_1psidts": cached_1psidts}
-        replacement = GeminiClientWrapper(client_id=client.id, **retry_kwargs)
-        if await self._init_attempt(replacement):
-            self._replace_client(client, replacement, retry_kwargs)
-            return replacement
-        logger.error(f"Client {client.id} retry with cached 1PSIDTS also failed; giving up.")
-        return None
+        """Initialize a single client; returns True on success."""
+        return await self._init_attempt(client)
 
     async def _init_attempt(self, client: GeminiClientWrapper) -> bool:
         """Run library init; returns True on success."""
@@ -75,18 +43,6 @@ class GeminiClientPool(metaclass=Singleton):
             return True
         except Exception:
             return False
-
-    def _replace_client(
-        self, old: GeminiClientWrapper, replacement: GeminiClientWrapper, kwargs: dict[str, Any]
-    ) -> None:
-        """Swap a client object for a fresh one (credential retry)."""
-        for i, client in enumerate(self._clients):
-            if client is old:
-                self._clients[i] = replacement
-                break
-        self._id_map[replacement.id] = replacement
-        self._round_robin = deque(self._clients)
-        self._client_specs[replacement.id] = kwargs
 
     async def init(self) -> None:
         """Initialize all clients in the pool with staggered start times."""
@@ -165,11 +121,10 @@ class GeminiClientPool(metaclass=Singleton):
             if client.running():
                 return True
 
-            live_client = await self._init_with_fallback(client)
-            if live_client is None:
-                return False
-            logger.info(f"Restarted Gemini client {live_client.id} after it stopped.")
-            return True
+            if await self._init_attempt(client):
+                logger.info(f"Restarted Gemini client {client.id} after it stopped.")
+                return True
+            return False
 
     @property
     def clients(self) -> list[GeminiClientWrapper]:
