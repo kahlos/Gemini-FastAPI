@@ -685,7 +685,7 @@ def _resolve_model_name(pool: GeminiClientPool, name: str) -> str:
             continue
 
         try:
-            return client.resolve_model(name).model_name
+            return client._resolve_model_by_name(name).model_name
         except ValueError:
             continue
 

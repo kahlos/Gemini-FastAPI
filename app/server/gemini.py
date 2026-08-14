@@ -525,7 +525,7 @@ async def gemini_generate_content(
 
     _persist_conversation(
         db,
-        model_obj.model_name,
+        model_obj,
         client,
         session.metadata,
         msgs,
