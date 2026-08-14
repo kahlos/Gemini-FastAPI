@@ -1,4 +1,6 @@
+import asyncio
 import io
+import time
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +10,7 @@ from gemini_webapi.constants import GRPC, AccountStatus
 from gemini_webapi.types import (
     AvailableModel,
     Candidate,
+    DeepResearchPlan,
     ModelOutput,
     RPCData,
 )
@@ -344,3 +347,137 @@ class GeminiClientWrapper(GeminiClient):
                     )
                     return ModelOutput(metadata=[cid, rid], candidates=[candidate])
         return None
+
+    async def fetch_deep_research_report(
+        self,
+        plan: DeepResearchPlan,
+        poll_interval: float = 10.0,
+        timeout: float = 600.0,
+        min_report_chars: int = 1500,
+    ) -> str | None:
+        """Poll the conversation-turns RPC for a completed deep-research report.
+
+        Fallback for accounts where ``plan.research_id`` never materializes and
+        the dependency's ``wait_for_deep_research`` raises before any poll
+        (research_mixin.py:336). Research still completes server-side; the full
+        report text lands in the completed turn's research block
+        (candidate[30][0][4], measured 19,787-26,356 chars on this account —
+        the plain text slot candidate[1][0] only carries a short completion
+        note). Same crawl shape as ``fetch_last_model_turn`` (rcid + completion
+        gate [8][0]==2 are both required), extended to extract the research
+        block. Returns the longest report-scale completed-turn text once it has
+        stayed stable across a confirmation poll, or None on timeout (the
+        caller decides the HTTP mapping). ``min_report_chars`` = 1500: measured
+        progress notes are 142-169 chars and plan text 144, so 1500 separates
+        reports (>10x) without a false positive.
+        """
+        cid = plan.cid or ""
+        if not cid:
+            logger.warning("Deep research fallback: plan.cid is missing; cannot poll turns RPC.")
+            return None
+        deadline = time.monotonic() + timeout
+        best_text: str | None = None
+        best_rcid = ""
+        stable_polls = 0
+        while time.monotonic() < deadline:
+            try:
+                report_texts = await self._crawl_report_texts(cid, limit=10)
+            except Exception as e:
+                logger.warning(
+                    f"Deep research fallback: turns RPC failed for {cid} "
+                    f"({type(e).__name__}: {e}); retrying until timeout."
+                )
+                report_texts = []
+            current_rcid, current_text = self._longest_report_scale(report_texts, min_report_chars)
+            elapsed = timeout - max(0.0, deadline - time.monotonic())
+            logger.info(
+                f"Deep research fallback poll (cid={cid}): elapsed={elapsed:.0f}s, "
+                f"longest_report_scale={len(current_text) if current_text else 0} chars, "
+                f"best={len(best_text) if best_text else 0} chars"
+            )
+            if current_text is not None and (
+                best_text is None or len(current_text) > len(best_text)
+            ):
+                best_text = current_text
+                best_rcid = current_rcid
+                stable_polls = 0
+            elif best_text is not None:
+                if current_rcid != best_rcid:
+                    logger.info(
+                        f"Deep research fallback: report turn {best_rcid} superseded by "
+                        f"{current_rcid} (shorter); settling on longest seen."
+                    )
+                    return best_text
+                stable_polls += 1
+                if stable_polls >= 1:
+                    logger.info(
+                        f"Deep research fallback: report crawl settled on {len(best_text)} "
+                        f"chars (rcid {best_rcid})."
+                    )
+                    return best_text
+            await asyncio.sleep(poll_interval)
+        logger.warning(
+            f"Deep research fallback: timed out after {timeout}s (best "
+            f"{len(best_text) if best_text else 0} chars); research may still "
+            f"complete in Gemini web history."
+        )
+        return None
+
+    async def _crawl_report_texts(self, cid: str, limit: int = 10) -> list[tuple[str, str]]:
+        """Crawl completed model turns and return (rcid, report-scale text) pairs."""
+        resp = await self._batch_execute(
+            [
+                RPCData(
+                    rpcid=GRPC.LIST_CONVERSATION_TURNS,
+                    payload=orjson.dumps([cid, limit, None, 1, [1], [4], None, 1]).decode("utf-8"),
+                )
+            ]
+        )
+        texts: list[tuple[str, str]] = []
+        parts = extract_json_from_response(resp.text)
+        for part in parts:
+            body = get_nested_value(part, [2])
+            if not body:
+                continue
+            try:
+                part_body = orjson.loads(body) if isinstance(body, str) else body
+            except orjson.JSONDecodeError:
+                continue
+            for turn in get_nested_value(part_body, [0]) or []:
+                candidates = get_nested_value(turn, [3, 0]) or []
+                for candidate_data in candidates:
+                    if not isinstance(candidate_data, list):
+                        continue
+                    rcid = get_nested_value(candidate_data, [0], "")
+                    if not rcid:
+                        continue
+                    if get_nested_value(candidate_data, [8, 0]) != 2:
+                        continue
+                    block = get_nested_value(candidate_data, [30], None)
+                    report_text = ""
+                    if isinstance(block, list) and block and isinstance(block[0], list):
+                        head = block[0]
+                        if len(head) > 4 and isinstance(head[4], str):
+                            report_text = head[4]
+                    plain_text = get_nested_value(candidate_data, [1, 0], "") or ""
+                    candidate_text = (
+                        report_text if len(report_text) >= len(plain_text) else plain_text
+                    )
+                    if candidate_text:
+                        texts.append((rcid, candidate_text))
+        return texts
+
+    @staticmethod
+    def _longest_report_scale(
+        texts: list[tuple[str, str]], min_report_chars: int
+    ) -> tuple[str, str | None]:
+        """Pick the longest completed-turn text at or above the report threshold."""
+        longest_rcid = ""
+        longest_text: str | None = None
+        longest_len = 0
+        for rcid, text in texts:
+            if len(text) >= min_report_chars and len(text) > longest_len:
+                longest_rcid = rcid
+                longest_text = text
+                longest_len = len(text)
+        return longest_rcid, longest_text

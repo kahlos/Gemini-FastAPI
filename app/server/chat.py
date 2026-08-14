@@ -411,6 +411,23 @@ def _build_structured_requirement(
     )
 
 
+def _extract_last_user_text(messages: list[ChatCompletionMessage]) -> str:
+    """Return the text of the last user message (string or text parts)."""
+    for msg in reversed(messages):
+        if msg.role != "user":
+            continue
+        content = msg.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                part.text or ""
+                for part in content
+                if getattr(part, "type", None) == "text" and part.text
+            )
+    return ""
+
+
 def _prepare_messages_for_model(
     source_messages: list[AppMessage],
     tools: Sequence[Any] | None,
@@ -2335,6 +2352,97 @@ async def create_chat_completion(
     extra_instr = [structured_requirement.instruction] if structured_requirement else None
 
     app_messages = convert_to_app_messages(request.messages)
+
+    if request.deep_research:
+        if request.stream:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Streaming is not supported for deep research.",
+            )
+        prompt = _extract_last_user_text(request.messages)
+        if not prompt:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Deep research requires a non-empty user text message.",
+            )
+        research_timeout = request.deep_research_timeout or 600
+        try:
+            client = await pool.acquire()
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
+            ) from e
+        fallback_report: str | None = None
+        try:
+            research_plan = await client.create_deep_research_plan(prompt)
+            start_output = await client.start_deep_research(research_plan)
+            if (
+                not research_plan.research_id
+                and start_output.deep_research_plan
+                and start_output.deep_research_plan.research_id
+            ):
+                research_plan.research_id = start_output.deep_research_plan.research_id
+            if research_plan.research_id:
+                result = await client.wait_for_deep_research(
+                    research_plan, timeout=research_timeout
+                )
+                result.start_output = start_output
+            else:
+                logger.warning(
+                    "Deep research: plan.research_id is missing on this account; "
+                    f"falling back to turns-RPC report crawl (cid={research_plan.cid}, "
+                    f"timeout={research_timeout}s)."
+                )
+                fallback_report = await client.fetch_deep_research_report(
+                    research_plan, timeout=research_timeout
+                )
+                if fallback_report is None:
+                    raise RuntimeError(
+                        f"Deep research report not available over HTTP after "
+                        f"{research_timeout}s; the research completes in your Gemini "
+                        f"web history (cid={research_plan.cid})."
+                    )
+                result = None
+        except Exception as e:
+            logger.error(f"Deep research error: {e}")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+
+        research_text = ""
+        if result is not None:
+            if result.final_output is not None:
+                research_text = result.final_output.text or ""
+            if not research_text:
+                research_text = result.plan.response_text or ""
+        else:
+            research_text = fallback_report or ""
+        if result is None or result.done:
+            visible_output = research_text
+        else:
+            eta = result.plan.eta_text or ""
+            visible_output = (
+                f"Deep research started (research_id={result.plan.research_id}, {eta}). "
+                f"The full report continues in your Gemini web history.\n\n{research_text}"
+            )
+
+        research_id = f"chatcmpl-{uuid.uuid4().hex}"
+        created_time = int(datetime.now(tz=UTC).timestamp())
+        p_tok, c_tok, t_tok, r_tok = calculate_usage(app_messages, visible_output, None, "")
+        usage = {
+            "prompt_tokens": p_tok,
+            "completion_tokens": c_tok,
+            "total_tokens": t_tok,
+            "completion_tokens_details": {"reasoning_tokens": r_tok},
+        }
+        return _create_chat_completion_standard_payload(
+            research_id,
+            created_time,
+            request.model,
+            visible_output,
+            None,
+            "stop",
+            usage,
+            "",
+        )
 
     msgs = _prepare_messages_for_model(
         app_messages,
