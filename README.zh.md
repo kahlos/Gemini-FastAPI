@@ -89,6 +89,13 @@ scripts/start-gemini-api.sh stop    # 优雅停止
 日志在 `${TMPDIR}/gemini-api.log`，PID 在 `${TMPDIR}/gemini-api.pid`。
 环境变量：`GEMINI_API_PORT`（默认 8000）、`GEMINI_START_TIMEOUT_LOOPS`。
 
+> [!IMPORTANT]
+> **真实凭据永不写入 `config/config.yaml`**（该文件已纳入 git 跟踪）。请把凭据
+> 放入 `~/.config/gemini-fastapi/secrets.env`（权限 600）；启动脚本会自动 source。
+> 可用 `GEMINI_SECRETS_FILE` 覆盖路径。这些值以环境变量覆盖的形式生效
+> （`CONFIG_GEMINI__CLIENTS__0__SECURE_1PSID` / `...__SECURE_1PSIDTS`），优先级
+> 高于 YAML — 因此任何 git checkout/reset 都无法覆盖或泄漏凭据。
+
 **Web API 访问位置（本部署）**：仅本机 `http://127.0.0.1:8000` — `/health`、
 交互式文档 `/docs`，以及下方所有 `/v1/*` 接口。已验证局域网地址无法访问。
 

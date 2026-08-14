@@ -7,6 +7,8 @@ PORT="${GEMINI_API_PORT:-8000}"
 HEALTH_URL="http://127.0.0.1:${PORT}/health"
 PID_FILE="${TMPDIR:-/tmp}/gemini-api.pid"
 LOG_FILE="${TMPDIR:-/tmp}/gemini-api.log"
+# Secrets live OUTSIDE the repo; config.yaml in the repo carries only placeholders.
+SECRETS_FILE="${GEMINI_SECRETS_FILE:-$HOME/.config/gemini-fastapi/secrets.env}"
 
 start() {
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
@@ -14,7 +16,18 @@ start() {
     exit 0
   fi
   echo "Starting gemini-api from $REPO ..."
-  ( cd "$REPO" && exec uv run python run.py ) >"$LOG_FILE" 2>&1 &
+  if [ -f "$SECRETS_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$SECRETS_FILE"
+    set +a
+    echo "Loaded secrets from $SECRETS_FILE"
+  else
+    echo "WARNING: secrets file not found at $SECRETS_FILE (relying on config.yaml / cookie cache)" >&2
+  fi
+  # Detach into a fresh session: the server can never be reaped or group-killed
+  # when the invoking shell/session ends (macOS has no setsid binary; python preloader).
+  ( cd "$REPO" && exec python3 -c 'import os, sys; os.setsid(); os.execvp("uv", ["uv", "run", "python", "run.py"])' ) >"$LOG_FILE" 2>&1 &
   echo $! > "$PID_FILE"
   for _ in $(seq 1 "${GEMINI_START_TIMEOUT_LOOPS:-40}"); do
     code=$(curl -s -m 2 -o /dev/null -w "%{http_code}" "$HEALTH_URL" 2>/dev/null)

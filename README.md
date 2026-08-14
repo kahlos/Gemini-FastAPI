@@ -88,8 +88,20 @@ scripts/start-gemini-api.sh status  # health body + pid
 scripts/start-gemini-api.sh stop    # graceful shutdown
 ```
 
+The server detaches into its own session on start, so it keeps running (and keeps
+serving opencode2) even after the terminal/session that launched it closes.
+
 Logs go to `${TMPDIR}/gemini-api.log`, PID to `${TMPDIR}/gemini-api.pid`.
 Env knobs: `GEMINI_API_PORT` (default 8000), `GEMINI_START_TIMEOUT_LOOPS`.
+
+> [!IMPORTANT]
+> **Real credentials never live in `config/config.yaml`** (tracked in git). Put
+> them in `~/.config/gemini-fastapi/secrets.env` (chmod 600); the start helper
+> sources it automatically before launching. Override the path with
+> `GEMINI_SECRETS_FILE`. The values are read as env overrides
+> (`CONFIG_GEMINI__CLIENTS__0__SECURE_1PSID` / `...__SECURE_1PSIDTS`), which
+> take precedence over the YAML — so a repo checkout/reset can never clobber or
+> leak credentials.
 
 **Where the Web API is accessible (this deployment)**: local-only at
 `http://127.0.0.1:8000` — `/health`, interactive docs at `/docs`, and the
