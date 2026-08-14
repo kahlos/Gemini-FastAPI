@@ -55,6 +55,7 @@ from app.models import (
     SummaryTextContent,
     ToolChoiceFunction,
     ToolChoiceTypes,
+    VideoGeneration,
 )
 from app.server.middleware import (
     get_media_store_dir,
@@ -72,6 +73,7 @@ from app.utils.helper import (
     append_tool_hint_to_last_user_message,
     build_image_generation_instruction,
     build_tool_prompt,
+    build_video_generation_instruction,
     calculate_usage,
     convert_to_app_messages,
     detect_image_extension,
@@ -2683,18 +2685,22 @@ async def create_response(
     structured_requirement = _build_structured_requirement(request.response_format)
     extra_instr = [structured_requirement.instruction] if structured_requirement else []
 
-    standard_tools, image_tools = [], []
+    standard_tools, image_tools, video_tools = [], [], []
     if request.tools:
         for t in request.tools:
             if isinstance(t, FunctionTool):
                 standard_tools.append(t)
             elif isinstance(t, ImageGeneration):
                 image_tools.append(t)
+            elif isinstance(t, VideoGeneration):
+                video_tools.append(t)
             elif isinstance(t, dict):
                 if t.get("type") == "function":
                     standard_tools.append(FunctionTool.model_validate(t))
                 elif t.get("type") == "image_generation":
                     image_tools.append(ImageGeneration.model_validate(t))
+                elif t.get("type") == "video_generation":
+                    video_tools.append(VideoGeneration.model_validate(t))
 
     img_instr = build_image_generation_instruction(
         image_tools,
@@ -2702,6 +2708,12 @@ async def create_response(
     )
     if img_instr:
         extra_instr.append(img_instr)
+    video_instr = build_video_generation_instruction(
+        video_tools,
+        request.tool_choice if isinstance(request.tool_choice, ToolChoiceFunction) else None,
+    )
+    if video_instr:
+        extra_instr.append(video_instr)
     preface = _convert_instructions_to_app_messages(request.instructions)
     conv_messages = [*preface, *base_messages] if preface else base_messages
     model_tool_choice = (
